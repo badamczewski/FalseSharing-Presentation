@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+
+		<title>Caches, Cache Lines & False Sharing in Managed Languages</title>
+		<meta name="description" content="Caches, Cache Lines & False Sharing in Managed Languages">
+		<meta name="author" content="Bartosz Adamczewski">
+
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+		<link rel="stylesheet" href="css/reveal.min.css">
+		<link rel="stylesheet" href="css/theme/sky.css" id="theme">
+
+		<!-- For syntax highlighting -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- If the query includes 'print-pdf', use the PDF print sheet -->
+		<script>
+			document.write( '<link rel="stylesheet" href="css/print/' + ( window.location.search.match( /print-pdf/gi ) ? 'pdf' : 'paper' ) + '.css" type="text/css" media="print">' );
+		</script>
+
+		<!--[if lt IE 9]>
+		<script src="lib/js/html5shiv.js"></script>
+		<![endif]-->
+	</head>
+
+	<body>
+		<div class="reveal">
+			<!-- Any section element inside of this container is displayed as a slide -->
+			<div class="slides">
+				<section>
+					<h1>False Sharing (.NET/JVM)</h1>
+					<h3 style="text-shadow: 0px 0px 6px rgba(0, 0, 0, 0.2);">And cache friendly code</h3>
+					<img src="img\mb.png"/>
+					<p></p>
+					<p>Bartosz Adamczewski (BAX Services)</p>
+					<p>
+						<a href="https://twitter.com/badamczewski01">@badamczewski01</a>
+					</p>
+				</section>
+
+				<section>
+					<h2>Outline</h2>
+					<ul>
+						<li><a href="#/why">what? why? I don't care!</a></li>
+						<li><a href="#/loops">a tale of two loops</a></li>
+						<li><a href="#/processor">processor and cache</a></li>
+						<li><a href="#/user">false sharing</a></li>
+						<li><a href="#/runtime">runtime false sharing</a></li>
+						<li><a href="#/gc">GC false sharing</a></li>
+						<li><a href="#/solutions">solutions & strategies</a></li>
+						<li><a href="#/credits">credits</a></li>
+					</ul>
+				</section>
+				<section id="why">
+					<section>
+						<h2>What? Why? I don't care!</h2>
+					</section>
+					<section>
+						<h2>Some Quotes:</h2>
+						<p>"during our Beta1 performance milestone in Parallel Extensions, most of our performance problems came down to stamping out false sharing in numerous places"</p>	
+						<p style="float:right">Joe Duffy</p>
+					</section>
+				</section>
+				<section id="loops">
+					<section>
+						<h2>a tale of two loops</h2>
+					</section>
+					<section>
+						<h2>this is somehow slow</h2>
+						<p>counter indexed</p>
+						<pre><code data-trim>
+int n = 10000;
+int m = 10000;
+int[,] tab = new int[n, m];
+for (int i = 0; i < n; i++)
+{
+   for (int j = 0; j < m; j++)
+   {
+       tab[*j*, i] = 1; //j instead of i 
+   }
+}
+						</code></pre>
+						<p class="fragment">~1500 ms</p>
+					</section>
+					<section>
+						<h2>this is faster (why?)</h2>
+						<p>sequentially indexed</p>
+						<pre><code data-trim>
+int n = 10000;
+int m = 10000;
+int[,] tab = new int[n, m];
+for (int i = 0; i < n; i++)
+{
+    for (int j = 0; j < m; j++)
+    {
+        tab[*i*, j] = 1; //i instead of j 
+    }
+}
+						</code></pre>
+						<p class="fragment">~700 ms</p>
+					</section>
+				</section>
+				<section id="processor">
+					<section><h2>processor and cache(s)</h2></section>
+					<section>
+						<h2>processor</h2>
+						<img src="img/processor.png"/> 
+					</section>
+					<section>
+						<h2>cache(s)</h2>
+						<ul>
+							<li class="fragment">L1 instruction cache I$</li>
+							<li class="fragment">L1 data cache D$</li>
+							<li class="fragment">L2/3 data cache D$</li>		
+							<li class="fragment">translation lookaside buffer (TLB)</li>
+							<li class="fragment">write buffer (not really a cache)</li>
+							<li class="fragment">invalidate queue (not really a cache)</li>				
+						</ul>							
+					</section>
+					<section>
+						<h2>latencies</h2>
+						<img src="img/cache_latency.png"/>
+					</section>
+					<section>
+						<h2>L cache</h2>
+						<img src="img/cache.png"/>
+						<ul>
+							<li class="fragment">cache is just a tag-hash-map</li>
+							<li class="fragment">processors read data in units (cache lines)</li>		
+							<li class="fragment">processors can detect cache patterns and prefetch lines</li>				
+						</ul>							
+					</section>
+					<section>
+						<h2>a tale of two loops (again)</h2>
+						<pre><code data-trim>
+						
+int n = 10000;
+int m = 10000;
+int[,] tab = new int[n, m];
+
+for (int i = 0; i < n; i++) {
+    for (int j = 0; j < m; j++) {
+        tab[*i*, j] = 1; //fast
+    }
+}
+..........
+for (int i = 0; i < n; i++) {
+    for (int j = 0; j < m; j++) {
+        tab[*j*, i] = 1; //slow
+    }
+}
+						</code></pre>
+					</section>
+					<section>
+						<h2>a tale of two loops (cache utilisation)</h2>
+						<p>fast :)</p>
+						<img src="img\cache_pref_fast.png"/>
+						<p>slow :(</p>
+						<img src="img\cache_pref_slow.png"/>
+					</section>
+					<section>
+						<h2>proper cache usage is important (!!!)</h2>
+						<p>even without false sharing effects ...</p>
+					</section>
+				</section>
+				<section id="user">
+					<section><h2>False Sharing</h2></section>
+					<section>
+						<h2>this is false sharing</h2>
+						<p>can you tell me what's going on?</p>
+						<pre><code data-trim>
+						
+public static int[] arr = new int[1024];
+...
+Thread[] th = new Thread[4];
+
+for (int i = 0; i < th.Length; i++)
+{
+    int n = i; //HEY! WHY THIS IS HERE?
+
+    th[i] = new Thread(new ThreadStart(() => {
+        for (int k = 0; k < 100000000; k++) {
+            arr[n] = arr[n] + 1;
+        }
+    }));
+}
+						</code></pre>
+					</section>
+					<section>
+						<h2>False Sharing</h2>
+						<p>two <b>hardware</b> threads occupy the same cache line</p>
+						<img src="img\false_sharing.png"/>
+					</section>
+					<section>
+						<h2>definition</h2>
+						<p>when two or more <b>hardware</b> threads modify data on the same cache line.</p>
+						<ul>
+							<li class="fragment" style="color:red">and those threads are from different CPUs</li>
+							<li class="fragment" style="color:red">and there's at least one writer</li>
+							<li class="fragment" style="color:red">and the modified/read data occupies an unique spot
+							<p class="fragment" style="color:red">.. if it's not then it's sharing with it's own set of magical problems</p></li>
+						</ul>
+					</section>
+					<section>
+						<h2>performance</h2>
+						<p>non linear scaling is a good indicator of false sharing</p>
+						<img src="img\chart1.png"/>
+					</section>
+					<section>
+						<h2>let's improve!</h2>
+						<p>we pad the elements</p>
+						<pre><code data-trim>
+						
+public static int[] arr = new int[1024];
+...
+Thread[] th = new Thread[4];
+
+for (int i = 0; i < th.Length; i++)
+{
+    int n = i; //HEY! WHY THIS IS HERE?
+
+    th[i] = new Thread(new ThreadStart(() => {
+        for (int k = 0; k < 100000000; k++) {
+            arr[n*16] = arr[n*16] + 1;
+        }
+    }));
+}
+						</code></pre>
+					</section>
+					<section>
+						<h2>performance</h2>
+						<p>linear scaling is a good indicator that there is no (or less) false sharing</p>
+						<img src="img\chart2.png"/>
+						<p class="fragment">actually it's cache and processor utilisation</p>
+					</section>
+					<section>
+						<h2>false sharing is no fun!</h2>
+					</section>
+				</section>
+				<section id="runtime">
+					<section><h2>Runtime False Sharing</h2></section>
+					<section>
+						<h2>runtime get's it the way</h2>
+						<p>this can slow us down</p>
+						<img src="img\false_sharing_runtime.png"/>
+					</section>
+					<section>
+						<h2>solution</h2>
+						<p>we pad the elements and the starting thread</p>
+						<pre><code data-trim>
+						
+public static int[] arr = new int[1024];
+...
+Thread[] th = new Thread[4];
+
+for (int i = 0; i < th.Length; i++)
+{
+    int n = i + 1; //HEY! WHY THIS IS HERE?
+
+    th[i] = new Thread(new ThreadStart(() => {
+        for (int k = 0; k < 100000000; k++) {
+            arr[n*16] = arr[n*16] + 1;
+        }
+    }));
+}
+						</code></pre>
+					</section>
+					<section>
+						<h2>performance</h2>
+						<p>even better</p>
+						<img src="img\chart3.png"/>
+					</section>
+					<section>
+						<h2>offset structs</h2>
+						<p>manual paddings can be replaced with custom layout</p>
+						<pre><code data-trim>
+[StructLayout(LayoutKind.Explicit)] 
+public struct Counter
+{
+    [FieldOffset(64)]
+    public int Cnt; 
+}
+...
+Thread[] th = new Thread[4];
+for (int i = 0; i < th.Length; i++) 
+{ 
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => { 
+        for (int k = 0; k < 100000000; k++) {
+            arrCounter[n].Cnt = arrCounter[n].Cnt + 1; 
+        }
+    })); 
+}												
+						</code></pre>
+						<p class="fragment" style="color:red">However! the runtime may not always respect them</p>
+					</section>
+					<section>
+						<h2>classes</h2>
+						<p>let's cover classes</p>
+						<pre><code data-trim>
+public class Counter
+{
+    public int Cnt; 
+}
+...
+Thread[] th = new Thread[4];
+for (int i = 0; i < th.Length; i++) 
+{ 
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => { 
+        arrCounter[n] = new Counter();
+        for (int k = 0; k < 100000000; k++) {
+            arrCounter[n].Cnt = arrCounter[n].Cnt + 1; 
+        }
+    }));											
+}										
+						</code></pre>
+					</section>
+					<section>
+						<h2>Layout of classes</h2>
+						<img src="img\classes_internal.png"/>	
+					</section>
+					<section>
+						<h2>Layout of classes</h2>
+						<p>classes are allocated by the runtime to be far apart, cool!</p>	
+						<p class="fragment" style="color:red">this will only happen if the instance is made in the local thread</p>
+					</section>
+					<section>
+						<h2>secret life of statics!</h2>
+						<p>where things live makes a difference</p>
+					</section>
+					<section>
+						<h2>literal static strings</h2>
+						<pre><code data-trim>        
+static string a = "aaa";
+static string b = "bbb";
+static string c = "ccc";
+...
+static string i = "iii";
+static string j = "jjj";
+...
+Thread[] th = new Thread[2];
+for (int i = 0; i < th.Length; i++) {
+    int n = i;
+    th[n] = new Thread(new ThreadStart(() => {
+        for (int k = 0; k < 100000000; k++) {
+            if (n == 0)
+              a = "a";
+            else if (n == 1)
+              j =  "b"; //what if we had 'b' here ?
+	    }
+    }));
+};							
+						</code></pre>
+					</section>
+					<section>
+						<h2>static strings location</h2>
+						<p>far apart and pinned!</p>
+						<img src="img\string_static.png"/>
+						<p class="fragment" style="color:red">There's something else in play here (lot's of moving parts)</p>
+					</section>
+					<section>
+						<h2>intern pool</h2>
+						<img src="img\string_pool.png"/>
+						<p class="fragment" style="color:red">The refs location in the pool also makes a difference</p>
+					</section>
+					<section>
+						<h2>results</h2>
+						<img src="img\chart6.png"/>
+					</section>
+					<section>
+						<h2>know your runtime</h2>
+					</section>
+				</section>
+				<section id="gc">
+					<section><h2>GC false sharing</h2></section>
+					<section>
+						<h2>classes fail!</h2>
+						<p>runtime auto layout can easily fail in a number of ways</p>
+					</section>
+					<section>
+						<h2>example (1) of fail</h2>
+						<p>objects are getting closer in memory</p>
+						<img src="img\classes_presure.png"/>
+					</section>
+					<section>
+						<h2>compactions make false sharing</h2>
+						<p>we force invoke collections & compactions</p>
+						<pre><code data-trim>	
+public class Counter
+{
+    public int Cnt; 
+}
+...
+Thread[] th = new Thread[4];
+for (int i = 0; i < th.Length; i++) 
+{ 
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => { 
+        arrCounter[n] = new Counter();
+		GC.Collect(); //simulate long running gc collected system.
+        for (int k = 0; k < 100000000; k++) {
+            arrCounter[n].Cnt = arrCounter[n].Cnt + 1; 
+        }
+    }));											
+}
+						</code></pre>
+					</section>
+					<section>
+						<h2>example (2) of fail</h2>
+						<p>we can end up false sharing everyting</p>
+						<p>(notice that array is pinned!)</p>
+						<img src="img\classes_pinned.png"/>
+					</section>
+					<section>
+						<h2>solution</h2>
+						<p>classes can have offsets</p>
+						<pre><code data-trim>
+[StructLayout(LayoutKind.Explicit)]				
+public class Counter
+{
+   [FieldOffset(16)]
+    public int Cnt; 
+}
+...
+Thread[] th = new Thread[4];
+for (int i = 0; i < th.Length; i++) 
+{ 
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => { 
+        arrCounter[n] = new Counter();
+		GC.Collect(); //simulate long running gc collected system.
+        for (int k = 0; k < 100000000; k++) {
+            arrCounter[n].Cnt = arrCounter[n].Cnt + 1; 
+        }
+    }));											
+}
+						</code></pre>
+					</section>
+					<section>
+						<h2>this is better</h2>
+						<img src="img\classes_offset.png"/>
+						<p class="fragment" style="color:red">GC can still trash you cache by moving objects</p>
+					</section>
+					<section>
+						<h2>performance</h2>
+						<p>even better</p>
+						<img src="img\chart4.png"/>
+					</section>
+					<section>
+						<h2>it's faster</h2>
+						<p>and those times will add up for long running systems</p>
+						<img src="img\chart4_details.png"/>
+					</section>
+					<section>
+						<h2>GC card marking</h2>
+					    <img src="img\card.png"/>	
+						<p class="fragment">used for partial collections and cross heap obj tracking</p>
+						<p class="fragment" style="color:red">can contribute to false sharing! see:
+						<a href="http://cr.openjdk.java.net/~never/7029167/">JVM fix - CR7029167</a>
+						</p>		
+					</section>
+					<section>
+						<h2>solution</h2>
+						<p class="fragment" style="color:red">Give up!</p>		
+						<p class="fragment">strategies:</p>								
+						<ul>
+						<li class="fragment">might get fixed 
+							<p></p>
+							<p class="fragment" style="padding-left:20px;">this <a href="http://www.google.com/patents/US6973554">CLR GC patent (ಠ_ಠ)</a> for e.g.
+							reduces card table false sharing (implemented in CLR)</p></li>
+						
+						<li class="fragment">use less GC (use un-managed memory blocks)
+							<p class="fragment" style="padding-left:20px; color:red">Recommended for critical code</p>
+							</li>
+						<li class="fragment">use less GC (structs & local stack)</li>
+						</ul>
+					</section>
+					<section>
+						<h2>allocations</h2>
+						<p>a remendy for GC problems</p>
+					</section>
+					<section>
+						<h2>stack allocation</h2>
+						<p>fisrst calculate locally then publish globally</p>
+						<code><pre>public class Counter
+{
+    public int Cnt; 
+}
+...
+Thread[] th = new Thread[8];
+for (int i = 0; i < th.Length; i++) {
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => {
+        int cnt = 0;
+        for (int k = 0; k < 100000000; k++)
+        {
+            cnt = cnt + 1;
+        }
+        p.arrCounter[n] = new Counter();
+        p.arrCounter[n].Cnt = cnt;
+    }));}           </code></pre>			
+					</section>
+					<section>
+						<h2>fixed heap allocation</h2>
+						<p>don't let gc move it</p>
+						<code><pre>			
+var h = GCHandle.Alloc(p.arr, GCHandleType.Pinned);
+Thread[] th = new Thread[8];
+
+for (int i = 0; i < th.Length; i++) {
+   int n = i + 1;
+   th[i] = new Thread(new ThreadStart(() => {
+       int[] a = (int[])h.Target;
+
+       for (int k = 0; k < 100000000; k++) {
+           a[n * 16] = a[n * 16] + 1;
+       }                }));
+}                  
+						</code></pre>			
+					</section>
+					<section>
+						<h2>fixed heap allocation (with pointers)</h2>
+						<p>more direct memory access to heap</p>
+						<code><pre>			
+var h = GCHandle.Alloc(p.arr, GCHandleType.Pinned);
+Thread[] th = new Thread[8];
+
+for (int i = 0; i < th.Length; i++) {
+   int n = i +1;
+   th[i] = new Thread(new ThreadStart(() => {
+       unsafe {
+           int* ptr = (int*)h.AddrOfPinnedObject();
+           ptr = ptr + (n * 16);
+           for (int k = 0; k < 100000000; k++)
+           {
+               *ptr = *ptr + 1;
+           }
+       }
+   }));}
+						</code></pre>			
+					</section>
+					<section>
+						<h2>off heap allocation</h2>
+						<p>allocate a unmanaged mem pool and use it</p>
+						<code><pre>			
+public static unsafe byte* global;
+...
+unsafe { global = Unsafe.Allocate(65536); } //this uses VirtualAllocEX
+...
+Thread[] th = new Thread[8];
+for (int i = 0; i < th.Length; i++) {
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => {
+        unsafe {
+            int* ptr = (int*)(global);
+            ptr = ptr + (n * 16);
+
+            for (int k = 0; k < 100000000; k++) {
+                *ptr = *ptr + 1;
+            }}}));}
+						</code></pre>			
+					</section>
+					<section>
+						<h2>mixed local off heap</h2>
+					<code><pre>			
+public static unsafe byte* global;
+...
+unsafe { global = Unsafe.Allocate(65536); } //this uses VirtualAllocEX
+...
+Thread[] th = new Thread[8];
+for (int i = 0; i < th.Length; i++) {
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => {
+        unsafe {
+			int cnt = 0;
+            int* ptr = (int*)(global);
+            ptr = ptr + (n * 16);
+
+            for (int k = 0; k < 100000000; k++) {
+                cnt++;
+            }
+            *ptr = cnt;
+			}}));}
+						</code></pre>	
+					</section>
+					<section>
+						<h2>results</h2>
+						<p>allocations make a difference</p>
+						<img src="img\chart5.png" />
+					</section>
+					<section>
+						<h2>understand your mem manager</h2>
+					</section>
+				</section>
+				<section id="solutions">
+					<section><h2>solutions & strategies</h2></section>
+					<section>
+						<h2>strategies</h2>
+						<ul>
+						<li class="fragment">pad data</li>
+						<li class="fragment">use local allocations (stack)</li>
+						<li class="fragment">pin your data</li>
+						<li class="fragment">allocate off heap blocks</li>
+						<li class="fragment">use pointer memory access</li>
+						</ul>
+					</section>
+					<section>
+						<h2>patterns</h2>
+						<p>cache friendly patterns that can reduce false sharing</p>
+					</section>
+					<section>
+						<h2>Reordering</h2>
+						<p>likley accessed data placed together</p>
+						<p>slow :(</p>
+						<code><pre>public struct SpecificCounter //can you see the problem?
+{
+    public int Id { get; set; }
+    public int Key { get; set; }
+    public int ModuleId { get; set; }
+    public int Value { get; set; }
+    public string CounterName { get; set; }
+}
+...
+for (int i = 0; i < th.Length; i++) {
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => {
+        for (int k = 0; k < 100000000; k++) {
+            if (arrCounter[n].Key == n)
+            {
+                arrCounter[n].Value++;
+            }
+        }});}				</code></pre>	
+					</section>
+					<section>
+						<h2>reordering continued</h2>
+						<p>fast :)</p>
+						<code><pre>public struct SpecificCounter //can you see a different problem?
+{
+    
+    public int Key { get; set; }
+    public int Value { get; set; }
+	
+    public int Id { get; set; }
+    public int ModuleId { get; set; }
+    public string CounterName { get; set; }
+}
+...
+for (int i = 0; i < th.Length; i++) {
+    int n = i;
+    th[i] = new Thread(new ThreadStart(() => {
+        for (int k = 0; k < 100000000; k++) {
+            if (arrCounter[n].Key == n)
+            {
+                arrCounter[n].Value++;
+            }
+        }});}				</code></pre>	
+							
+					</section>
+					<section>
+						<h2>reordering warning</h2>
+						<p style="color:red">a word of warning</p>
+						<p style="color:red">don't use an auto backing fields if using properties when optimizing cache patterns</p>
+					</section>
+					<section>
+						<h2>hot/cold split</h2>
+						<p>the same idea but expanded</p>
+						<p style="color:red">we can ignore backing fields now (for the most part)</p>
+						<code><pre>public struct SpecificCounter
+{
+    
+    public int Key { get; set; }
+    public int Value { get; set; }
+	
+	public SpecificCounterData Data { get; set;}
+}
+//depending if this is a class or struct the behavior will be different. 
+public class SpecificCounterData
+{
+    public int Id { get; set; }
+    public int ModuleId { get; set; }
+    public string CounterName { get; set; }
+	... Some more crap here
+}
+</code></pre>	
+					</section>
+				</section>
+				<section>
+						<h2>summary</h2>
+						<p>now I hope that you know that cache friendly programming is important and identifying and fixing false sharing effects is key to scalable concurrent code</p>
+				</section>
+				<section id="credits">
+					<h2>Thank you!</h2>
+					<p>Bartosz Adamczewski</p>
+					<p>
+						<a href="https://twitter.com/Scooletz">@badamczewski01</a>
+					</p>
+					
+					<p>credits:</p>
+					<ul>
+					<li>orcale: <a href="https://blogs.oracle.com/dave/entry/false_sharing_induced_by_card">false_sharing_induced_by_card</a></li>
+					<li>chapters from this book: <a href="http://shop.oreilly.com/product/9780596003517.do">Shared Source CLI Essentials</a></li>
+					</ul>
+				</section>
+			</div>
+		</div>
+		
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.min.js"></script>
+		<script>
+			// Full list of configuration options available here:
+			// https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+				transition: 'slide',
+
+				theme: Reveal.getQueryHash().theme, // available themes are in /css/theme
+				transition: Reveal.getQueryHash().transition || 'fade', // default/cube/page/concave/zoom/linear/fade/none
+
+				// Parallax scrolling
+				// parallaxBackgroundImage: 'https://s3.amazonaws.com/hakim-static/reveal-js/reveal-parallax-1.jpg',
+				// parallaxBackgroundSize: '2100px 900px',
+
+				// Optional libraries used to extend on reveal.js
+				dependencies: [
+					{ src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: 'plugin/zoom-js/zoom.js', async: true, condition: function() { return !!document.body.classList; } },
+					{ src: 'plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } }
+				]
+			});
+
+		</script>
+	</body>
+</html>
